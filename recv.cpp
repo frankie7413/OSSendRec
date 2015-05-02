@@ -1,12 +1,11 @@
 #include <sys/shm.h>
 #include <sys/msg.h>
-#include <sys/ipc.h>
-#include <sys/stat.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string>
+#include <iostream>
 #include "msg.h"    /* For the message struct */
 
 using namespace std;
@@ -28,23 +27,21 @@ void *sharedMemPtr;
 string recvFileName()
 {
 	/* The file name received from the sender */
-	//string fileName;
+	string fileName;
         
 	/* TODO: declare an instance of the fileNameMsg struct to be
 	 * used for holding the message received from the sender.
          */
-	fileNameMsg msgRcv;	
-	
-
-        /* TODO: Receive the file name using msgrcv() */ 
-	if(msgrcv(msqid, &msgRcv, sizeof(struct fileNameMsg) - sizeof(long),FILE_NAME_TRANSFER_TYPE,0) < 0)
+	fileNameMsg msg;
+        /* TODO: Receive the file name using msgrcv() */
+	if(msgrcv(msqid, &msg, sizeof(fileNameMsg) - sizeof(long), FILE_NAME_TRANSFER_TYPE, 0) < 0)
 	{
-		perror("msgrcv");
+		perror("msgsnd");
 		exit(-1);
 	}
 	/* TODO: return the received file name */
-	
-        return msgRcv.fileName;
+	fileName = msg.fileName;
+        return fileName;
 }
  /**
  * Sets up the shared memory segment and message queue
@@ -65,43 +62,41 @@ void init(int& shmid, int& msqid, void*& sharedMemPtr)
 		    is unique system-wide among all System V objects. Two objects, on the other hand,
 		    may have the same key.
 	 */
-	key_t key = ftok("keyfile.txt", 'a');
-	/* Make sure the key generation succeeded */
-	if(key < 0)
-	{
-		perror("ftok");
+	 key_t key = ftok("keyfile.txt", 'a');
+	 
+	 if(key < 0)
+	 {
+	 	perror("ftok");
 		exit(-1);
-	}
+	 }
+	
 
 	
-	/* TODO: Allocate a shared memory segment . The size of the segment must be 				SHARED_MEMORY_CHUNK_SIZE. */		
-	shmid = shmget(key, SHARED_MEMORY_CHUNK_SIZE, IPC_CREAT | S_IRUSR | S_IWUSR);
-	/* Failed to allocate shared memory */
+	/* TODO: Allocate a shared memory segment . The size of the segment must be SHARED_MEMORY_CHUNK_SIZE. */
+	shmid = shmget(key, SHARED_MEMORY_CHUNK_SIZE, 0666 | IPC_CREAT);
+	
 	if(shmid < 0)
 	{
 		perror("shmget");
 		exit(-1);
 	}
-
 	/* TODO: Attach to the shared memory */
-	sharedMemPtr = (char*)shmat(shmid,NULL,0);
-
-	/*  Make sure the memory successfully attached */
+	sharedMemPtr = (char*) shmat(shmid, NULL, 0);
+	
 	if(((void*)sharedMemPtr) < 0)
 	{
 		perror("shmat");
 		exit(-1);
 	}
-
 	/* TODO: Create a message queue */
 	msqid = msgget(key, 0666 | IPC_CREAT);
+	
 	if(msqid < 0)
 	{
-		perror("msqid");
+		perror("msgget");
 		exit(-1);
 	}
 	/* TODO: Store the IDs and the pointer to the shared memory region in the corresponding parameters */
-	
 }
  
 
@@ -112,7 +107,6 @@ void init(int& shmid, int& msqid, void*& sharedMemPtr)
  */
 unsigned long mainLoop(const char* fileName)
 {
-	
 	/* The size of the message received from the sender */
 	int msgSize = -1;
 	
@@ -123,12 +117,11 @@ unsigned long mainLoop(const char* fileName)
 	string recvFileNameStr = fileName;
 	
 	/* TODO: append __recv to the end of file name */
-	recvFileNameStr += "__recv";
-
+	recvFileNameStr.append("__recv");
 	/* Open the file for writing */
 	FILE* fp = fopen(recvFileNameStr.c_str(), "w");
 			
-	/* was the file open?*/
+	/* Error checks */
 	if(!fp)
 	{
 		perror("fopen");	
@@ -152,41 +145,38 @@ unsigned long mainLoop(const char* fileName)
 		 * <ORIGINAL FILENAME__recv>. For example, if the name of the original
 		 * file is song.mp3, the name of the received file is going to be song.mp3__recv.
 		 */
-		message msg;
-		if(msgrcv(msqid, &msg, sizeof(struct message)-sizeof(long), SENDER_DATA_TYPE,0) < 0)
+		 message msg;
+		 if(msgrcv(msqid, &msg, sizeof(message) - sizeof(long), SENDER_DATA_TYPE, 0) < 0)
 		{
-			perror("msgrcv");
+			perror("msgsnd");
+			fclose(fp);
 			exit(-1);
 		}
+		
 		msgSize = msg.size;
-
+		
 		/* If the sender is not telling us that we are done, then get to work */
 		if(msgSize != 0)
 		{
 			/* TODO: count the number of bytes received */
-			numBytesRecv += msg.size;
-
+			numBytesRecv += msgSize;
 			/* Save the shared memory to file */
 			if(fwrite(sharedMemPtr, sizeof(char), msgSize, fp) < 0)
 			{
 				perror("fwrite");
-				exit(-1);
 			}
 			
 			/* TODO: Tell the sender that we are ready for the next set of bytes. 
  			 * I.e. send a message of type RECV_DONE_TYPE. That is, a message
 			 * of type ackMessage with mtype field set to RECV_DONE_TYPE. 
  			 */
-			
-			ackMessage rcvDone;
-			rcvDone.mtype = RECV_DONE_TYPE;
-			/*Check if message was sent*/
-			if (msgsnd(msqid,&rcvDone, sizeof(struct ackMessage) - sizeof(long),0) < 0)
+ 			ackMessage endMsg;
+ 			endMsg.mtype = RECV_DONE_TYPE;
+ 			if(msgsnd(msqid, &endMsg, sizeof(ackMessage) - sizeof(long), 0) < 0)
 			{
 				perror("msgsnd");
 				exit(-1);
 			}
-
 		}
 		/* We are done */
 		else
@@ -216,18 +206,17 @@ void cleanUp(const int& shmid, const int& msqid, void* sharedMemPtr)
 		exit(-1);
 	}
 	/* TODO: Deallocate the shared memory segment */
-	if(shmctl (shmid, IPC_RMID, 0) < 0)
+	if(shmctl(shmid, IPC_RMID, NULL) < 0)
 	{
 		perror("shmctl");
+		exit(-1);
 	}
-	
-	
 	/* TODO: Deallocate the message queue */
-	if(msgctl(msqid, IPC_RMID, 0)<0)
+	if(msgctl(msqid, IPC_RMID, NULL) < 0)
 	{
 		perror("msgctl");
+		exit(-1);
 	}
-	
 }
 
 /**
@@ -240,7 +229,6 @@ void ctrlCSignal(int signal)
 	cleanUp(shmid, msqid, sharedMemPtr);
 }
 
-
 int main(int argc, char** argv)
 {
 	
@@ -249,8 +237,7 @@ int main(int argc, char** argv)
  	 * queue and the shared memory segment before exiting. You may add 
 	 * the cleaning functionality in ctrlCSignal().
  	 */
-	signal(SIGINT, ctrlCSignal);
-				
+	signal(SIGINT, ctrlCSignal); 			
 	/* Initialize */
 	init(shmid, msqid, sharedMemPtr);
 	
@@ -263,5 +250,7 @@ int main(int argc, char** argv)
 	/* TODO: Detach from shared memory segment, and deallocate shared memory 
 	 * and message queue (i.e. call cleanup) 
 	 */
+	 cleanUp(shmid, msqid, sharedMemPtr);
+		
 	return 0;
 }
